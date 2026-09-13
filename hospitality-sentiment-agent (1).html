@@ -1254,6 +1254,10 @@
       <div class="status-dot"></div>
       Agent Active
     </div>
+    <div id="backend-status-pill" style="display:flex;align-items:center;gap:6px;font-size:0.75rem;padding:4px 12px;border-radius:100px;background:rgba(16,185,129,0.12);color:var(--accent3);border:1px solid rgba(16,185,129,0.25);font-weight:600;" title="Python REST + WebSocket Live Connection">
+      <div id="backend-status-dot" class="status-dot" style="background:#10b981;box-shadow:0 0 8px #10b981;"></div>
+      <span id="backend-status-text">Backend: Connecting...</span>
+    </div>
     <div class="theme-toggle-wrap">
       <span class="theme-icon" id="theme-icon">☀️</span>
       <div class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light mode"></div>
@@ -1550,6 +1554,36 @@
         <div style="font-size:0.7rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--text3);margin-bottom:6px;">LIVE SIMULATION</div>
         <h2 style="font-family:'Playfair Display',serif;font-size:1.8rem;margin-bottom:6px;">Demo with Mock Reviews</h2>
         <p style="color:var(--text2);font-size:0.88rem;line-height:1.6;max-width:700px;">Watch ClearVision process real-world mock reviews step by step — from detection to response. Click any scenario to run the full agent pipeline live.</p>
+      </div>
+
+      <!-- LIVE SELENIUM REVIEW SCRAPER PANEL -->
+      <div class="panel-card" style="margin-bottom:1.75rem; border: 1px solid rgba(245,158,11,0.3); background: rgba(245,158,11,0.03);">
+        <div class="panel-card-header" style="display:flex; justify-content:space-between; align-items:center;">
+          <span class="panel-card-title">🕷️ Live Selenium Scraper & Real-Time Ingestion</span>
+          <span id="scraper-status-pill" style="font-size:0.72rem; padding:3px 10px; border-radius:100px; background:rgba(29,114,232,0.15); color:var(--accent4); font-weight:600;">Selenium Chrome Headless</span>
+        </div>
+        <div class="panel-card-body" style="padding:1.25rem;">
+          <p style="font-size:0.84rem; color:var(--text2); margin-bottom:1rem; line-height:1.5;">
+            Extract real-time verified guest reviews from Google Maps, TripAdvisor, Yelp, or Booking.com via Python Selenium. The scraping logs, AI sentiment analysis, and recovery responses are streamed live into the terminal below via WebSockets.
+          </p>
+          <div style="display:grid; grid-template-columns: 1fr 180px 140px auto; gap:10px; align-items:center;">
+            <input type="text" id="scrape-target-input" class="form-input" placeholder="Hotel Name or Direct Review URL..." value="The Grand ClearVision">
+            <select id="scrape-platform-select" class="form-select">
+              <option value="Google">Google Maps</option>
+              <option value="TripAdvisor">TripAdvisor</option>
+              <option value="Booking.com">Booking.com</option>
+              <option value="Yelp">Yelp</option>
+            </select>
+            <select id="scrape-count-select" class="form-select">
+              <option value="3">3 Reviews</option>
+              <option value="5" selected>5 Reviews</option>
+              <option value="10">10 Reviews</option>
+            </select>
+            <button class="btn btn-primary" onclick="triggerSeleniumScraper()" id="btn-run-scraper" style="white-space:nowrap; padding:10px 18px;">
+              🕷️ Run Scraper
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- DEMO SCENARIOS -->
@@ -2046,6 +2080,190 @@ const TEST_CASES = [
 ];
 
 // ============================================================
+// BACKEND REST & WEBSOCKET CLIENT
+// ============================================================
+const API_BASE = (window.location.protocol.startsWith('http')) 
+  ? (window.location.port === '8000' ? window.location.origin : 'http://localhost:8000') 
+  : 'http://localhost:8000';
+
+const WS_BASE = API_BASE.replace(/^http/, 'ws') + '/ws/live';
+
+let wsClient = null;
+let backendOnline = false;
+
+function updateBackendStatus(online, text) {
+  backendOnline = online;
+  const pill = document.getElementById('backend-status-pill');
+  const dot = document.getElementById('backend-status-dot');
+  const label = document.getElementById('backend-status-text');
+  if (!pill || !dot || !label) return;
+
+  if (online) {
+    pill.style.background = 'rgba(16,185,129,0.15)';
+    pill.style.color = 'var(--accent3)';
+    pill.style.borderColor = 'rgba(16,185,129,0.3)';
+    dot.style.background = '#10b981';
+    dot.style.boxShadow = '0 0 8px #10b981';
+    label.textContent = text || 'Backend: Connected (REST + WS)';
+  } else {
+    pill.style.background = 'rgba(148,163,184,0.12)';
+    pill.style.color = 'var(--text2)';
+    pill.style.borderColor = 'rgba(148,163,184,0.2)';
+    dot.style.background = '#94a3b8';
+    dot.style.boxShadow = 'none';
+    label.textContent = text || 'Backend: Offline (Client Mode)';
+  }
+}
+
+function initWebSocket() {
+  try {
+    wsClient = new WebSocket(WS_BASE);
+
+    wsClient.onopen = () => {
+      updateBackendStatus(true, 'Backend: Connected (REST + WS)');
+      console.log('[ClearVision WS] Connected to live WebSocket server at', WS_BASE);
+      syncWithBackend();
+    };
+
+    wsClient.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        handleWebSocketEvent(payload);
+      } catch (err) {
+        console.error('[ClearVision WS] Parse error:', err);
+      }
+    };
+
+    wsClient.onclose = () => {
+      updateBackendStatus(false, 'Backend: Disconnected (Reconnecting...)');
+      setTimeout(initWebSocket, 4000);
+    };
+
+    wsClient.onerror = (err) => {
+      updateBackendStatus(false, 'Backend: Offline (Client Mode)');
+    };
+  } catch (e) {
+    updateBackendStatus(false, 'Backend: Offline (Client Mode)');
+  }
+}
+
+function handleWebSocketEvent(payload) {
+  const { event, data } = payload;
+  console.log('[ClearVision WS Event]', event, data);
+
+  if (event === 'new_review') {
+    const rev = data.review;
+    if (!reviews.some(r => r.id === rev.id)) {
+      reviews.unshift(rev);
+      renderReviewList();
+      renderDashboard();
+      syncHotelRatings();
+      showToast('⭐', `New ${rev.rating}★ Review from ${rev.name} (${rev.platform})`);
+    }
+  } else if (event === 'scraper_log') {
+    const terminal = document.getElementById('demo-terminal');
+    const statusLabel = document.getElementById('demo-status-label');
+    const statusDot = document.getElementById('demo-status-dot');
+
+    if (statusLabel) statusLabel.textContent = `Scraping: ${data.progress_pct}%`;
+    if (statusDot) statusDot.style.background = 'var(--accent3)';
+
+    if (terminal) {
+      const line = document.createElement('div');
+      line.style.color = data.level === 'warning' ? '#f59e0b' : (data.level === 'error' ? '#ef4444' : '#10b981');
+      line.textContent = `[${data.timestamp}] ${data.message}`;
+      terminal.appendChild(line);
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+  } else if (event === 'scraper_completed') {
+    showToast('✅', `Scraping Complete! ${data.total_ingested} reviews ingested.`);
+    const statusLabel = document.getElementById('demo-status-label');
+    const statusDot = document.getElementById('demo-status-dot');
+    const btn = document.getElementById('btn-run-scraper');
+    if (statusLabel) statusLabel.textContent = 'Completed';
+    if (statusDot) statusDot.style.background = 'var(--accent3)';
+    if (btn) { btn.disabled = false; btn.innerHTML = '🕷️ Run Scraper'; }
+    syncWithBackend();
+  } else if (event === 'review_updated') {
+    const updated = data.review;
+    const idx = reviews.findIndex(r => r.id === updated.id);
+    if (idx !== -1) {
+      reviews[idx] = updated;
+      renderReviewList();
+      if (currentReviewId === updated.id) openReview(updated.id);
+    }
+  } else if (event === 'stats_updated') {
+    renderDashboard();
+    syncHotelRatings();
+  }
+}
+
+async function syncWithBackend() {
+  try {
+    const res = await fetch(`${API_BASE}/api/reviews`);
+    if (res.ok) {
+      const serverReviews = await res.json();
+      if (Array.isArray(serverReviews) && serverReviews.length > 0) {
+        reviews = serverReviews;
+        renderReviewList();
+        renderDashboard();
+        syncHotelRatings();
+      }
+    }
+  } catch (e) {
+    console.log('[ClearVision] Local client mode active:', e);
+  }
+}
+
+async function triggerSeleniumScraper() {
+  const target = document.getElementById('scrape-target-input').value.trim() || 'The Grand ClearVision';
+  const platform = document.getElementById('scrape-platform-select').value;
+  const count = parseInt(document.getElementById('scrape-count-select').value) || 5;
+  const btn = document.getElementById('btn-run-scraper');
+
+  // Focus and clear demo terminal
+  switchPage('demo');
+  const terminal = document.getElementById('demo-terminal');
+  if (terminal) {
+    terminal.innerHTML = `
+      <div style="color:#f59e0b;">// [CLEAR VISION SELENIUM ENGINE] Connecting to ${platform}...</div>
+      <div style="color:#475569;">// Target: ${target} | Reviews to Harvest: ${count}</div>
+    `;
+  }
+  const statusLabel = document.getElementById('demo-status-label');
+  const statusDot = document.getElementById('demo-status-dot');
+  if (statusLabel) statusLabel.textContent = 'Launching Webdriver...';
+  if (statusDot) statusDot.style.background = 'var(--accent)';
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Scraping...';
+  }
+
+  showToast('🕷️', `Starting Selenium ${platform} scraper...`);
+
+  try {
+    const res = await fetch(`${API_BASE}/api/scrape`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: target.startsWith('http') ? target : null,
+        hotel_name: target.startsWith('http') ? null : target,
+        platform: platform,
+        max_reviews: count
+      })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    console.warn('[ClearVision] Backend scrape trigger failed, running client simulation:', err);
+    if (terminal) {
+      terminal.innerHTML += `<div style="color:#ef4444;">[NOTICE] Backend unavailable. Running client simulation...</div>`;
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '🕷️ Run Scraper'; }
+  }
+}
+
+// ============================================================
 // INIT
 // ============================================================
 window.onload = () => {
@@ -2059,6 +2277,10 @@ window.onload = () => {
   renderCompete();
   renderDemoScenarios();
   renderDocs();
+
+  // Initialize Backend REST & WebSockets
+  initWebSocket();
+  syncWithBackend();
 };
 
 // ============================================================
@@ -2259,8 +2481,17 @@ function openReview(id) {
 function sendResponse(id) {
   const r = reviews.find(x => x.id === id);
   const ta = document.getElementById(`resp-textarea-${id}`);
-  r.response = ta.value;
+  if (ta) r.response = ta.value;
   r.sent = true;
+
+  if (backendOnline && typeof id === 'number' && id < 1000000000000) {
+    fetch(`${API_BASE}/api/reviews/${id}/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ response: r.response })
+    }).catch(e => console.warn('Could not sync send action with backend:', e));
+  }
+
   showToast('✅', `Response sent to ${r.name} on ${r.platform}!`);
   openReview(id);
   renderReviewList();
@@ -2367,7 +2598,7 @@ function setStars(val) {
   });
 }
 
-function submitManualReview() {
+async function submitManualReview() {
   const name = document.getElementById('f-name').value.trim() || 'Guest';
   const platform = document.getElementById('f-platform').value;
   const text = document.getElementById('f-review').value.trim();
@@ -2376,6 +2607,47 @@ function submitManualReview() {
 
   if (!text) { showToast('⚠️', 'Please enter a review text!'); return; }
 
+  // Submit to Python REST API if backend is online
+  if (backendOnline) {
+    try {
+      showToast('🤖', 'Sending to Clear Vision AI engine...');
+      const res = await fetch(`${API_BASE}/api/reviews`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          platform,
+          rating,
+          category,
+          text,
+          auto_analyze: true
+        })
+      });
+
+      if (res.ok) {
+        const created = await res.json();
+        if (!reviews.some(r => r.id === created.id)) {
+          reviews.unshift(created);
+        }
+        renderReviewList();
+        renderDashboard();
+        showToast('🚀', `AI Analysis: ${created.sentiment.toUpperCase()} (${created.score}/100)`);
+        syncHotelRatings();
+
+        switchPage('monitor');
+        setTimeout(() => openReview(created.id), 100);
+
+        document.getElementById('f-name').value = '';
+        document.getElementById('f-review').value = '';
+        setStars(0);
+        return;
+      }
+    } catch (err) {
+      console.warn('[ClearVision] Backend submission error, falling back to client mode:', err);
+    }
+  }
+
+  // Fallback to client-side local analyzer
   const { sentiment, score } = analyzeText(text, rating);
   const issues = guessIssues(text);
   const response = generateResponse(name, sentiment, issues, text);
